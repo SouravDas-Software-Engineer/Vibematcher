@@ -27,7 +27,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME")
 SECRET_KEY = os.getenv("SECRET_KEY") or "supersecretkey123"
 ALGORITHM = "HS256"
-API_BASE_URL = "http://127.0.0.1:8000"
+API_BASE_URL = "https://vibematcher-d9lt.onrender.com"
 
 DEFAULT_AVATAR = "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 DEFAULT_HEADER = "https://images.unsplash.com/photo-1514525253440-b393452e8d26?q=80&w=2000&auto=format&fit=crop"

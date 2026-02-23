@@ -36,8 +36,10 @@ url_cache = TTLCache(maxsize=1000, ttl=3600)
 
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
-    "https://api.piped.otter.sh",
-    "https://pipedapi.tokhmi.xyz"
+    "https://pipedapi.smnz.de",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.tokhmi.xyz",
+    "https://api.piped.projectsegfau.lt"
 ]
 
 app.add_middleware(
@@ -216,7 +218,8 @@ async def stream_yt(video_id: str, request: Request):
         except Exception:
             for base_url in PIPED_INSTANCES:
                 try:
-                    r = requests.get(f"{base_url}/streams/{video_id}", timeout=2)
+                    # We increased the timeout from 2 to 7 seconds here!
+                    r = requests.get(f"{base_url}/streams/{video_id}", timeout=7)
                     if r.status_code == 200:
                         data = r.json()
                         for s in data.get('audioStreams', []):

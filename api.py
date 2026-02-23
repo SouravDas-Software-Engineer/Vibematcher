@@ -36,10 +36,11 @@ url_cache = TTLCache(maxsize=1000, ttl=3600)
 
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
+    "https://pipedapi.syncular.network",
+    "https://api.piped.projectsegfau.lt",
     "https://pipedapi.smnz.de",
     "https://pipedapi.adminforge.de",
-    "https://pipedapi.tokhmi.xyz",
-    "https://api.piped.projectsegfau.lt"
+    "https://pipedapi.tokhmi.xyz"
 ]
 
 app.add_middleware(
@@ -215,22 +216,27 @@ async def stream_yt(video_id: str, request: Request):
                 final_stream_url = info['url']
                 stream_headers = info.get('http_headers', {})
                 url_cache[video_id] = (final_stream_url, stream_headers)
-        except Exception:
+        except Exception as e:
+            print(f"yt-dlp blocked by YouTube. Attempting backups...")
             for base_url in PIPED_INSTANCES:
                 try:
-                    # We increased the timeout from 2 to 7 seconds here!
-                    r = requests.get(f"{base_url}/streams/{video_id}", timeout=7)
+                    # Increased timeout to 10 seconds to allow slow free servers to respond
+                    r = requests.get(f"{base_url}/streams/{video_id}", timeout=10)
                     if r.status_code == 200:
                         data = r.json()
                         for s in data.get('audioStreams', []):
                             if s.get('mimeType', '').startswith('audio/'):
                                 final_stream_url = s['url']
                                 url_cache[video_id] = (final_stream_url, {})
+                                print(f"Successfully streamed using backup: {base_url}")
                                 break
                     if final_stream_url: break
-                except: continue
+                except Exception as ex: 
+                    print(f"Backup {base_url} failed or timed out.")
+                    continue
+            
             if not final_stream_url:
-                raise HTTPException(status_code=404, detail="Could not stream")
+                raise HTTPException(status_code=404, detail="Could not stream from any source")
 
     client = httpx.AsyncClient()
     headers = {"Range": request.headers.get("range", "bytes=0-")}

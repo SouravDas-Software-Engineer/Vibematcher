@@ -33,6 +33,21 @@ const artElement = document.getElementById('current-art');
 const bgElement = document.getElementById('app-bg');
 const waveCanvas = document.getElementById('wave-canvas');
 
+// --- Auth Fetch Wrapper ---
+async function authFetch(url, options = {}) {
+    const headers = {
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        'Content-Type': 'application/json',
+        ...options.headers
+    };
+    const response = await fetch(url, { ...options, headers });
+    if (response.status === 401) {
+        logout();
+        throw new Error("Unauthorized");
+    }
+    return response;
+}
+
 window.onload = () => {
     // Theme Logic
     const themeToggle = document.getElementById('checkbox');
@@ -47,11 +62,9 @@ window.onload = () => {
         });
     }
 
-    // Init Drop Zones
     setupDropZone('drop-header', 'preview-header', (base64) => newHeaderBase64 = base64);
     setupDropZone('drop-avatar', 'preview-avatar', (base64) => newAvatarBase64 = base64);
 
-    // Volume Init
     const savedVol = localStorage.getItem('volume');
     if (audioPlayer) {
         audioPlayer.volume = savedVol ? parseFloat(savedVol) : 1.0;
@@ -59,6 +72,14 @@ window.onload = () => {
     if (volSlider) {
         volSlider.value = audioPlayer.volume;
     }
+
+    // Window Resize for Canvas Stability
+    window.addEventListener('resize', () => {
+        if (waveCanvas) {
+            waveCanvas.width = waveCanvas.parentElement.offsetWidth;
+            waveCanvas.height = waveCanvas.parentElement.offsetHeight;
+        }
+    });
 
     // Listeners
     if (audioPlayer) {
@@ -78,7 +99,6 @@ window.onload = () => {
             if(playIcon) playIcon.className = "fa-solid fa-pause";
             
             const titleEl = document.getElementById('current-title');
-            
             const currentSong = musicQueue[queueIndex];
             if(currentSong && titleEl) {
                 titleEl.innerText = currentSong.title;
@@ -97,8 +117,19 @@ window.onload = () => {
             if(artElement) artElement.classList.remove('playing');
             if(playIcon) playIcon.className = "fa-solid fa-play";
         });
+
+        // Error Recovery
+        audioPlayer.onerror = () => {
+            console.warn("Stream interrupted. Attempting automatic recovery...");
+            const currentSong = musicQueue[queueIndex];
+            if (currentSong) {
+                audioPlayer.src = `${currentSong.filename}?retry=${Date.now()}`;
+                audioPlayer.play().catch(e => console.error("Recovery failed", e));
+            }
+        };
     }
 
+    // Touch Support for Seek Slider
     if(seekSlider) {
         seekSlider.addEventListener('mousedown', () => { isSeeking = true; });
         seekSlider.addEventListener('touchstart', () => { isSeeking = true; });
@@ -111,6 +142,10 @@ window.onload = () => {
              audioPlayer.currentTime = e.target.value;
              setTimeout(() => { isSeeking = false; }, 50);
         });
+        seekSlider.addEventListener('touchend', (e) => {
+            audioPlayer.currentTime = e.target.value;
+            setTimeout(() => { isSeeking = false; }, 50);
+       });
     }
 
     if(volSlider) volSlider.addEventListener('input', () => {
@@ -124,9 +159,6 @@ window.onload = () => {
 
 /* --- AUTOPLAY / INFINITE QUEUE LOGIC --- */
 async function autoFillQueue(baseSong) {
-    console.log("Fetching recommendations for:", baseSong.title);
-    
-    // FALLBACK URL CONSTRUCTION
     let url = `${API_URL}/recommendations?`;
     if (baseSong.videoId) {
         url += `video_id=${baseSong.videoId}`;
@@ -155,7 +187,6 @@ async function autoFillQueue(baseSong) {
 
 /* --- PLAYER LOGIC --- */
 function playDirect(song) {
-    // 1. POPUP PLAYER BAR
     const playerBar = document.querySelector('.player-bar');
     if (playerBar) playerBar.classList.add('active');
 
@@ -176,9 +207,7 @@ function playDirect(song) {
         else artElement.innerHTML = `<i class="fa-solid fa-music"></i>`;
     }
 
-    if(musicQueue.length <= 1) addToRecents(song); 
-    else addToRecents(song);
-
+    addToRecents(song);
     checkIfLiked(song);
 }
 
@@ -406,14 +435,13 @@ async function toggleLikeCurrent() {
     const song = musicQueue[queueIndex];
     const btn = document.getElementById('player-like-btn');
     
-    let likedPlaylist = null;
     try {
-        const res = await fetch(`${API_URL}/playlists/${currentUser}`);
+        const res = await authFetch(`${API_URL}/playlists/${currentUser}`);
         const playlists = await res.json();
-        likedPlaylist = playlists.find(p => p.name === "Liked Songs");
+        let likedPlaylist = playlists.find(p => p.name === "Liked Songs");
         if (!likedPlaylist) {
-            const createRes = await fetch(`${API_URL}/playlists/create`, {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
+            const createRes = await authFetch(`${API_URL}/playlists/create`, {
+                method: 'POST',
                 body: JSON.stringify({username: currentUser, name: "Liked Songs"})
             });
             const createData = await createRes.json();
@@ -422,14 +450,14 @@ async function toggleLikeCurrent() {
         const isLiked = likedPlaylist.songs && likedPlaylist.songs.some(s => s.title === song.title);
         if (isLiked) {
             const newSongs = likedPlaylist.songs.filter(s => s.title !== song.title);
-            await fetch(`${API_URL}/playlists/update_songs`, {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
+            await authFetch(`${API_URL}/playlists/update_songs`, {
+                method: 'POST',
                 body: JSON.stringify({ playlist_id: likedPlaylist._id, songs: newSongs })
             });
             btn.classList.remove('liked');
         } else {
-            await fetch(`${API_URL}/playlists/add_song`, {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
+            await authFetch(`${API_URL}/playlists/add_song`, {
+                method: 'POST',
                 body: JSON.stringify({ playlist_id: likedPlaylist._id, song: song })
             });
             btn.classList.add('liked');
@@ -442,7 +470,7 @@ async function checkIfLiked(song) {
     btn.classList.remove('liked');
     if(!song) return;
     try {
-        const res = await fetch(`${API_URL}/playlists/${currentUser}`);
+        const res = await authFetch(`${API_URL}/playlists/${currentUser}`);
         const playlists = await res.json();
         const likedPlaylist = playlists.find(p => p.name === "Liked Songs");
         if (likedPlaylist && likedPlaylist.songs.some(s => s.title === song.title)) {
@@ -453,7 +481,7 @@ async function checkIfLiked(song) {
 
 async function showLikedSongs() {
     try {
-        const res = await fetch(`${API_URL}/playlists/${currentUser}`);
+        const res = await authFetch(`${API_URL}/playlists/${currentUser}`);
         const playlists = await res.json();
         const liked = playlists.find(p => p.name === "Liked Songs");
         if (liked) openPlaylistView(liked);
@@ -567,8 +595,8 @@ async function deleteSongFromPlaylist(index) {
 }
 
 async function savePlaylistChanges() {
-    await fetch(`${API_URL}/playlists/update_songs`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+    await authFetch(`${API_URL}/playlists/update_songs`, {
+        method: 'POST',
         body: JSON.stringify({ playlist_id: currentPlaylistData._id, songs: currentPlaylistData.songs })
     });
 }
@@ -633,6 +661,16 @@ async function showHome() {
     hideAllViews();
     document.getElementById('btn-home').classList.add('active');
     document.getElementById('home-view').classList.remove('hidden');
+    
+    // Dynamic greeting based on time of day
+    const hours = new Date().getHours();
+    let greet = "Good ";
+    if (hours < 12) greet += "Morning";
+    else if (hours < 18) greet += "Afternoon";
+    else greet += "Evening";
+    const name = localStorage.getItem('display_name') || currentUser || "Viber";
+    document.getElementById('greeting-text').innerText = window.innerWidth < 480 ? greet : `${greet}, ${name}`;
+
     const recentsDiv = document.getElementById('home-recents');
     if(recentsDiv) {
         recentsDiv.innerHTML = "";
@@ -759,13 +797,13 @@ function openAddToPlaylistModal(song) { songToAdd = song; openModal('select-play
 
 async function loadPlaylistsForSelection() {
     const list = document.getElementById('playlist-selection-list');
-    const res = await fetch(`${API_URL}/playlists/${currentUser}`);
+    const res = await authFetch(`${API_URL}/playlists/${currentUser}`);
     const playlists = await res.json();
     list.innerHTML = "";
     playlists.forEach(p => {
         const div = document.createElement('div'); div.className = "song-row"; div.innerHTML = `<h4>${p.name}</h4>`;
         div.onclick = async () => {
-            await fetch(`${API_URL}/playlists/add_song`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({playlist_id: p._id, song: songToAdd})});
+            await authFetch(`${API_URL}/playlists/add_song`, { method: 'POST', body: JSON.stringify({playlist_id: p._id, song: songToAdd})});
             closeModal('select-playlist-modal'); alert("Added!");
         };
         list.appendChild(div);
@@ -775,7 +813,7 @@ async function loadPlaylistsForSelection() {
 async function createPlaylist() {
     const name = document.getElementById('new-playlist-name').value;
     if (!name.trim()) return alert("Please enter a playlist name");
-    await fetch(`${API_URL}/playlists/create`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username: currentUser, name: name})});
+    await authFetch(`${API_URL}/playlists/create`, { method: 'POST', body: JSON.stringify({username: currentUser, name: name})});
     closeModal('create-playlist-modal'); 
     document.getElementById('new-playlist-name').value = "";
     renderPlaylists();
@@ -785,7 +823,7 @@ async function deletePlaylist(event, playlistId) {
     event.stopPropagation();
     if(!confirm("Are you sure you want to delete this playlist?")) return;
     try {
-        const res = await fetch(`${API_URL}/playlists/${playlistId}`, { method: 'DELETE' });
+        const res = await authFetch(`${API_URL}/playlists/${playlistId}`, { method: 'DELETE' });
         if (res.ok) {
             const btn = event.target.closest('.music-card');
             if(btn) btn.remove();
@@ -798,7 +836,7 @@ async function saveProfile() {
     const b = document.getElementById('edit-bio').value;
     const av = newAvatarBase64 || localStorage.getItem('avatar') || DEFAULT_AVATAR;
     const hd = newHeaderBase64 || localStorage.getItem('header') || DEFAULT_HEADER;
-    await fetch(`${API_URL}/update_profile`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username: currentUser, display_name: n, bio: b, avatar: av, header: hd})});
+    await authFetch(`${API_URL}/update_profile`, { method: 'POST', body: JSON.stringify({username: currentUser, display_name: n, bio: b, avatar: av, header: hd})});
     localStorage.setItem('display_name', n); localStorage.setItem('bio', b); localStorage.setItem('avatar', av); localStorage.setItem('header', hd);
     closeModal('profile-modal'); showProfileView();
 }
@@ -808,7 +846,7 @@ async function renderPlaylists() {
     if(!list) return;
     list.innerHTML = "Loading...";
     try {
-        const res = await fetch(`${API_URL}/playlists/${currentUser}`);
+        const res = await authFetch(`${API_URL}/playlists/${currentUser}`);
         const playlists = await res.json();
         list.innerHTML = "";
         if (playlists.length === 0) { list.innerHTML = "<p style='padding:20px; color:var(--text-secondary);'>No playlists yet.</p>"; return; }

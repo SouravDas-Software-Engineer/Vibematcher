@@ -1,11 +1,13 @@
 import os
 import requests
+import httpx
 from datetime import datetime, timedelta
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Response, Request
+from fastapi import FastAPI, HTTPException, Response, Request, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from pymongo import MongoClient
 from passlib.context import CryptContext
@@ -19,6 +21,7 @@ from cachetools import TTLCache
 load_dotenv(dotenv_path="env.env")
 
 app = FastAPI()
+auth_scheme = HTTPBearer()
 
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME")
@@ -34,9 +37,7 @@ url_cache = TTLCache(maxsize=1000, ttl=3600)
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://api.piped.otter.sh",
-    "https://pipedapi.tokhmi.xyz",
-    "https://api.piped.privacy.com.de",
-    "https://pipedapi.drgns.space"
+    "https://pipedapi.tokhmi.xyz"
 ]
 
 app.add_middleware(
@@ -54,7 +55,6 @@ playlists_col = db["playlists"]
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-# --- Models ---
 class UserAuth(BaseModel):
     username: str
     password: str
@@ -78,7 +78,6 @@ class PlaylistUpdateSongs(BaseModel):
     playlist_id: str
     songs: list
 
-# --- Helpers ---
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=60)
@@ -91,180 +90,19 @@ def get_password_hash(password):
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
-# --- Routes ---
+async def get_current_user(token: HTTPAuthorizationCredentials = Depends(auth_scheme)):
+    try:
+        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return username
+    except Exception:
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
 
 @app.get('/favicon.ico', include_in_schema=False)
 async def favicon():
     return Response(status_code=204)
-
-@app.get("/search_online")
-def search_online(q: str):
-    if not q: return []
-    print(f"Searching for: {q}") 
-    try:
-        yt = YTMusic()
-        results = yt.search(q, filter='songs')
-        data = []
-        for r in results[:20]: 
-            try:
-                video_id = r.get('videoId')
-                if not video_id: continue
-                
-                stream_url = f"{API_BASE_URL}/stream_yt/{video_id}"
-                thumbnails = r.get('thumbnails', [])
-                cover_url = thumbnails[-1]['url'] if thumbnails else DEFAULT_AVATAR
-                artists = r.get('artists', [])
-                artist_name = ", ".join([a['name'] for a in artists]) if artists else "Unknown Artist"
-
-                data.append({
-                    "title": r.get('title', 'Unknown Title'),
-                    "artist": artist_name,
-                    "filename": stream_url, 
-                    "cover": cover_url,
-                    "source": "online",
-                    "videoId": video_id 
-                })
-            except Exception as inner_e:
-                continue
-        return data
-    except Exception as e:
-        print(f"Search Error: {e}")
-        return []
-
-# --- ROBUST RECOMMENDATIONS (Autoplay Fix) ---
-@app.get("/recommendations")
-def get_recommendations(video_id: Optional[str] = None, title: Optional[str] = None, artist: Optional[str] = ""):
-    """
-    Fetches similar songs.
-    Fallback: If video_id is missing/undefined, it searches by Title to find the ID first.
-    """
-    try:
-        yt = YTMusic()
-        target_id = video_id
-
-        # FALLBACK: If we don't have a valid ID, find it using the title
-        if not target_id or target_id == "undefined":
-            if title:
-                print(f"⚠️ No ID provided. Searching for ID of: {title} {artist}")
-                search_results = yt.search(f"{title} {artist}", filter='songs')
-                if search_results:
-                    target_id = search_results[0].get('videoId')
-            
-        if not target_id: 
-            return []
-
-        # Get 'Up Next' list
-        watch_list = yt.get_watch_playlist(videoId=target_id, limit=10)
-        tracks = watch_list.get('tracks', [])
-        
-        results = []
-        for t in tracks:
-            vid = t.get('videoId')
-            if not vid or vid == target_id: continue
-            
-            results.append({
-                "title": t.get('title', 'Unknown'),
-                "artist": t['artists'][0]['name'] if t.get('artists') else "Unknown",
-                "filename": f"{API_BASE_URL}/stream_yt/{vid}",
-                "cover": t['thumbnail'][0]['url'] if t.get('thumbnail') else DEFAULT_AVATAR,
-                "source": "recommendation",
-                "videoId": vid
-            })
-        return results
-    except Exception as e:
-        print(f"Rec Error: {e}")
-        return []
-
-@app.get("/stream_yt/{video_id}")
-async def stream_yt(video_id: str, request: Request):
-    final_stream_url = None
-    stream_headers = {}
-
-    if video_id in url_cache:
-        cached_data = url_cache[video_id]
-        if isinstance(cached_data, tuple):
-            final_stream_url, stream_headers = cached_data
-        else:
-            del url_cache[video_id]
-
-    if not final_stream_url:
-        print(f"🎵 Generating link for: {video_id}")
-        try:
-            ydl_opts = {
-                'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True, 'nocheckcertificate': True,
-                'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}
-            }
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                final_stream_url = info['url']
-                stream_headers = info.get('http_headers', {})
-                url_cache[video_id] = (final_stream_url, stream_headers)
-        except Exception as e:
-            print(f"❌ yt-dlp Error: {e}")
-            for base_url in PIPED_INSTANCES:
-                try:
-                    r = requests.get(f"{base_url}/streams/{video_id}", timeout=2)
-                    if r.status_code == 200:
-                        data = r.json()
-                        for s in data.get('audioStreams', []):
-                            if s.get('mimeType', '').startswith('audio/'):
-                                final_stream_url = s['url']
-                                stream_headers = {} 
-                                url_cache[video_id] = (final_stream_url, stream_headers)
-                                break
-                    if final_stream_url: break
-                except: continue
-            if not final_stream_url:
-                raise HTTPException(status_code=404, detail="Could not stream song")
-
-    req_headers = dict(stream_headers)
-    range_header = request.headers.get("range")
-    if range_header:
-        req_headers["Range"] = range_header
-
-    try:
-        r = requests.get(final_stream_url, headers=req_headers, stream=True, timeout=10)
-        if r.status_code == 403:
-            if video_id in url_cache: del url_cache[video_id]
-            return Response(status_code=403)
-
-        forward_headers = {k: v for k, v in r.headers.items() if k.lower() in ["content-range", "content-length", "accept-ranges", "content-type"]}
-        return StreamingResponse(
-            r.iter_content(chunk_size=8192),
-            status_code=r.status_code,
-            headers=forward_headers,
-            media_type=r.headers.get("content-type", "audio/webm")
-        )
-    except Exception as e:
-        print(f"Stream Proxy Error: {e}")
-        return Response(status_code=500)
-
-@app.post("/playlists/create")
-async def create_playlist(data: PlaylistCreate):
-    new_playlist = {"name": data.name, "username": data.username, "songs": [], "created_at": datetime.utcnow()}
-    result = playlists_col.insert_one(new_playlist)
-    return {"message": "Playlist created", "id": str(result.inserted_id)}
-
-@app.get("/playlists/{username}")
-async def get_playlists(username: str):
-    playlists = list(playlists_col.find({"username": username}))
-    for p in playlists: p["_id"] = str(p["_id"]) 
-    return playlists
-
-@app.post("/playlists/add_song")
-async def add_song_to_playlist(data: AddSongToPlaylist):
-    playlists_col.update_one({"_id": ObjectId(data.playlist_id)}, {"$push": {"songs": data.song}})
-    return {"message": "Song added"}
-
-@app.post("/playlists/update_songs")
-async def update_playlist_songs(data: PlaylistUpdateSongs):
-    playlists_col.update_one({"_id": ObjectId(data.playlist_id)}, {"$set": {"songs": data.songs}})
-    return {"message": "Playlist updated"}
-
-@app.delete("/playlists/{playlist_id}")
-async def delete_playlist(playlist_id: str):
-    playlists_col.delete_one({"_id": ObjectId(playlist_id)})
-    return {"message": "Deleted"}
 
 @app.post("/register")
 async def register(user: UserAuth):
@@ -288,8 +126,166 @@ async def login(user: UserAuth):
     }
 
 @app.post("/update_profile")
-async def update_profile(data: ProfileUpdate):
+async def update_profile(data: ProfileUpdate, current_user: str = Depends(get_current_user)):
+    if data.username != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized")
     users_col.update_one({"username": data.username}, {"$set": {"display_name": data.display_name, "bio": data.bio, "avatar": data.avatar, "header": data.header}})
     return {"message": "Updated"}
+
+@app.get("/search_online")
+def search_online(q: str):
+    if not q: return []
+    try:
+        yt = YTMusic()
+        results = yt.search(q, filter='songs')
+        data = []
+        for r in results[:20]: 
+            try:
+                video_id = r.get('videoId')
+                if not video_id: continue
+                thumbnails = r.get('thumbnails', [])
+                cover_url = thumbnails[-1]['url'] if thumbnails else DEFAULT_AVATAR
+                artists = r.get('artists', [])
+                artist_name = ", ".join([a['name'] for a in artists]) if artists else "Unknown"
+
+                data.append({
+                    "title": r.get('title', 'Unknown Title'),
+                    "artist": artist_name,
+                    "filename": f"{API_BASE_URL}/stream_yt/{video_id}", 
+                    "cover": cover_url,
+                    "source": "online",
+                    "videoId": video_id 
+                })
+            except Exception:
+                continue
+        return data
+    except Exception:
+        return []
+
+@app.get("/recommendations")
+def get_recommendations(video_id: Optional[str] = None, title: Optional[str] = None, artist: Optional[str] = ""):
+    try:
+        yt = YTMusic()
+        target_id = video_id
+        if not target_id or target_id == "undefined":
+            if title:
+                search_results = yt.search(f"{title} {artist}", filter='songs')
+                if search_results:
+                    target_id = search_results[0].get('videoId')
+            
+        if not target_id: return []
+
+        watch_list = yt.get_watch_playlist(videoId=target_id, limit=10)
+        tracks = watch_list.get('tracks', [])
+        
+        results = []
+        for t in tracks:
+            vid = t.get('videoId')
+            if not vid or vid == target_id: continue
+            
+            results.append({
+                "title": t.get('title', 'Unknown'),
+                "artist": t['artists'][0]['name'] if t.get('artists') else "Unknown",
+                "filename": f"{API_BASE_URL}/stream_yt/{vid}",
+                "cover": t['thumbnail'][0]['url'] if t.get('thumbnail') else DEFAULT_AVATAR,
+                "source": "recommendation",
+                "videoId": vid
+            })
+        return results
+    except Exception:
+        return []
+
+@app.get("/stream_yt/{video_id}")
+async def stream_yt(video_id: str, request: Request):
+    final_stream_url = None
+    stream_headers = {}
+
+    if video_id in url_cache:
+        cached_data = url_cache[video_id]
+        if isinstance(cached_data, tuple):
+            final_stream_url, stream_headers = cached_data
+
+    if not final_stream_url:
+        try:
+            ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True, 'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}}
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                final_stream_url = info['url']
+                stream_headers = info.get('http_headers', {})
+                url_cache[video_id] = (final_stream_url, stream_headers)
+        except Exception:
+            for base_url in PIPED_INSTANCES:
+                try:
+                    r = requests.get(f"{base_url}/streams/{video_id}", timeout=2)
+                    if r.status_code == 200:
+                        data = r.json()
+                        for s in data.get('audioStreams', []):
+                            if s.get('mimeType', '').startswith('audio/'):
+                                final_stream_url = s['url']
+                                url_cache[video_id] = (final_stream_url, {})
+                                break
+                    if final_stream_url: break
+                except: continue
+            if not final_stream_url:
+                raise HTTPException(status_code=404, detail="Could not stream")
+
+    client = httpx.AsyncClient()
+    headers = {"Range": request.headers.get("range", "bytes=0-")}
+    headers.update(stream_headers)
+    
+    req = client.build_request("GET", final_stream_url, headers=headers)
+    r = await client.send(req, stream=True)
+
+    if r.status_code >= 400:
+        await r.aclose()
+        await client.aclose()
+        if video_id in url_cache: del url_cache[video_id]
+        raise HTTPException(status_code=r.status_code)
+
+    # Use a generator to yield chunks, then safely close the client
+    async def stream_generator():
+        try:
+            async for chunk in r.aiter_bytes():
+                yield chunk
+        finally:
+            await r.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        stream_generator(),
+        status_code=r.status_code,
+        headers={k: v for k, v in r.headers.items() if k.lower() in ["content-range", "content-length", "accept-ranges"]},
+        media_type=r.headers.get("content-type", "audio/webm")
+    )
+
+@app.post("/playlists/create")
+async def create_playlist(data: PlaylistCreate, current_user: str = Depends(get_current_user)):
+    new_playlist = {"name": data.name, "username": current_user, "songs": [], "created_at": datetime.utcnow()}
+    result = playlists_col.insert_one(new_playlist)
+    return {"message": "Playlist created", "id": str(result.inserted_id)}
+
+@app.get("/playlists/{username}")
+async def get_playlists(username: str, current_user: str = Depends(get_current_user)):
+    if username != current_user: raise HTTPException(status_code=403, detail="Unauthorized")
+    playlists = list(playlists_col.find({"username": username}))
+    for p in playlists: p["_id"] = str(p["_id"]) 
+    return playlists
+
+@app.post("/playlists/add_song")
+async def add_song_to_playlist(data: AddSongToPlaylist, current_user: str = Depends(get_current_user)):
+    playlist = playlists_col.find_one({"_id": ObjectId(data.playlist_id), "username": current_user})
+    if not playlist: raise HTTPException(status_code=403, detail="Not your playlist")
+    playlists_col.update_one({"_id": ObjectId(data.playlist_id)}, {"$push": {"songs": data.song}})
+    return {"message": "Song added"}
+
+@app.post("/playlists/update_songs")
+async def update_playlist_songs(data: PlaylistUpdateSongs, current_user: str = Depends(get_current_user)):
+    playlists_col.update_one({"_id": ObjectId(data.playlist_id), "username": current_user}, {"$set": {"songs": data.songs}})
+    return {"message": "Playlist updated"}
+
+@app.delete("/playlists/{playlist_id}")
+async def delete_playlist(playlist_id: str, current_user: str = Depends(get_current_user)):
+    playlists_col.delete_one({"_id": ObjectId(playlist_id), "username": current_user})
+    return {"message": "Deleted"}
 
 app.mount("/", StaticFiles(directory=".", html=True), name="static")

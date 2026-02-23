@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#000000">
     <title>VibeMatcher</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -23,7 +25,7 @@
     </div>
 
     <div id="profile-modal" class="screen hidden modal-overlay">
-        <div class="glass-card modal-content" style="width: 450px;">
+        <div class="glass-card modal-content" style="max-width: 450px; width: 100%;">
             <span onclick="closeModal('profile-modal')" class="close-btn">&times;</span>
             <h2>Edit Profile</h2>
             <input type="text" id="edit-name" placeholder="Display Name">
@@ -54,7 +56,7 @@
     </div>
 
     <div id="add-song-modal" class="screen hidden modal-overlay">
-        <div class="glass-card modal-content" style="width: 500px; max-height: 80vh; display:flex; flex-direction:column;">
+        <div class="glass-card modal-content" style="max-width: 500px; width: 100%; max-height: 80vh; display:flex; flex-direction:column;">
             <span onclick="closeModal('add-song-modal')" class="close-btn">&times;</span>
             <h2>Add Songs</h2>
             <div class="search-bar active" style="width: 100%; margin-bottom: 20px; background: rgba(255,255,255,0.1);">
@@ -79,10 +81,10 @@
                 <h2><i class="fa-solid fa-bolt"></i> VibeMatcher</h2>
             </div>
             <div class="menu">
-                <div class="menu-item" id="btn-home" onclick="showHome()"><i class="fa-solid fa-house"></i> Home</div>
-                <div class="menu-item" id="btn-liked" onclick="showLikedSongs()"><i class="fa-solid fa-heart"></i> Liked Songs</div>
-                <div class="menu-item" id="btn-profile" onclick="showProfileView()"><i class="fa-solid fa-user"></i> Profile</div>
-                <div class="menu-item" id="btn-about" onclick="showAbout()"><i class="fa-solid fa-circle-info"></i> About</div>
+                <div class="menu-item" id="btn-home" onclick="showHome()"><i class="fa-solid fa-house"></i> <span>Home</span></div>
+                <div class="menu-item" id="btn-liked" onclick="showLikedSongs()"><i class="fa-solid fa-heart"></i> <span>Liked Songs</span></div>
+                <div class="menu-item" id="btn-profile" onclick="showProfileView()"><i class="fa-solid fa-user"></i> <span>Profile</span></div>
+                <div class="menu-item" id="btn-about" onclick="showAbout()"><i class="fa-solid fa-circle-info"></i> <span>About</span></div>
             </div>
             <div class="theme-switch-wrapper">
                 <span style="font-size: 13px; color: var(--text-secondary); margin-right: 10px;">Light Mode</span>
@@ -91,7 +93,7 @@
                     <div class="slider round"></div>
                 </label>
             </div>
-            <div class="spacer"></div>
+            <div class="spacer" style="flex:1;"></div>
             <button onclick="logout()" class="logout-btn">LOGOUT</button>
         </nav>
 
@@ -100,8 +102,7 @@
                 <h3>Queue</h3>
                 <i class="fa-solid fa-xmark" style="cursor:pointer;" onclick="toggleQueue()"></i>
             </div>
-            <div id="queue-list-container">
-                </div>
+            <div id="queue-list-container"></div>
         </aside>
 
         <main class="content">
@@ -114,20 +115,20 @@
 
             <div id="home-view">
                 <h1 id="greeting-text">Welcome</h1>
-                <h4 class="section-title">RECENTLY PLAYED</h4>
+                <h4 class="section-title" style="margin-top: 20px;">RECENTLY PLAYED</h4>
                 <div class="horizontal-section" id="home-recents"></div>
                 <h4 class="section-title">TRENDING NOW</h4>
                 <div class="horizontal-section" id="home-trending"></div>
             </div>
 
             <div id="playlist-details-view" class="hidden">
-                <div class="playlist-header">
-                    <div class="playlist-cover-large" id="pd-cover"><img src="" alt="Playlist Cover"></div>
+                <div class="playlist-header" style="display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap;">
+                    <div class="playlist-cover-large" id="pd-cover" style="width: clamp(120px, 40vw, 200px); aspect-ratio: 1; border-radius: 10px; overflow: hidden;"><img src="" alt="Playlist Cover" style="width:100%; height:100%; object-fit:cover;"></div>
                     <div class="playlist-info">
-                        <h2 id="pd-title">Playlist Name</h2>
-                        <p id="pd-count">0 Songs</p>
+                        <h2 id="pd-title" style="font-size: 40px;">Playlist Name</h2>
+                        <p id="pd-count" style="color: var(--text-secondary); margin-bottom: 20px;">0 Songs</p>
                         <div style="display: flex; gap: 10px;">
-                            <button class="play-all-btn" id="pd-play-btn"><i class="fa-solid fa-play"></i> PLAY ALL</button>
+                            <button class="play-all-btn" id="pd-play-btn" style="width: auto; padding: 12px 25px;"><i class="fa-solid fa-play"></i> PLAY ALL</button>
                             <button class="secondary-btn" id="pd-edit-btn" onclick="toggleEditMode()" style="width: auto; margin:0; border-radius: 50px; padding: 12px 25px;"><i class="fa-solid fa-pen"></i> EDIT</button>
                         </div>
                     </div>
@@ -146,8 +147,8 @@
                 <div class="profile-card glass-panel">
                     <div class="profile-avatar" id="p-avatar-container"><i class="fa-solid fa-user"></i></div>
                     <h2 id="p-display-name">User</h2>
-                    <p id="p-location">Music Lover</p>
-                    <button class="small-btn secondary-btn" onclick="openEditProfile()" style="border-color: rgba(255,255,255,0.2); margin-top: 15px;">EDIT PROFILE</button>
+                    <p id="p-location" style="color: var(--text-secondary);">Music Lover</p>
+                    <button class="small-btn secondary-btn" onclick="openModal('profile-modal')" style="border-color: rgba(255,255,255,0.2); margin-top: 15px;">EDIT PROFILE</button>
                 </div>
                 <div class="profile-tabs">
                     <div class="tab" id="tab-playlists" onclick="switchProfileTab('playlists')">PLAYLISTS</div>
@@ -166,7 +167,11 @@
 
             <div id="about-view" class="hidden glass-panel" style="padding: 30px; border-radius: 20px; margin-top: 20px;">
                 <h2>VibeMatcher</h2>
-                <p style="margin-top: 10px; color: var(--text-secondary); line-height: 1.6;">Version: 3.1 (Full Feature Set)</p>
+                <p style="margin-top: 10px; color: var(--text-secondary); line-height: 1.6;">Test ver: 4.0
+                    i have recently updated the responsiveness of the app
+                    so that it can adjust itself to the device we are playing. MORE UPDATES COMMING SOON. 
+                    STAY TUNE AND STAY FROSTY.
+                </p>
             </div>
         </main>
 

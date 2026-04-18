@@ -16,7 +16,11 @@ from jose import jwt
 from dotenv import load_dotenv
 from bson import ObjectId
 from cachetools import TTLCache
-from pyDes import des, ECB, PAD_PKCS5
+try:
+    from pyDes import des, ECB, PAD_PKCS5
+except ImportError:
+    print("WARNING: pyDes not found. JioSaavn decryption will fail.")
+    des = ECB = PAD_PKCS5 = None
 
 load_dotenv(dotenv_path=".env")
 
@@ -41,11 +45,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "db_connected": db is not None}
 
-client = MongoClient(MONGO_URI)
-db = client[DB_NAME]
-users_col = db["users"]
-playlists_col = db["playlists"]
+# Database Config with Resilience
+try:
+    if not MONGO_URI:
+        print("CRITICAL: MONGO_URI is not set in environment!")
+        db = None
+        users_col = None
+        playlists_col = None
+    else:
+        client = MongoClient(MONGO_URI)
+        db = client[DB_NAME or "music_app_db"]
+        users_col = db["users"]
+        playlists_col = db["playlists"]
+        print(f"Connected to MongoDB: {DB_NAME or 'music_app_db'}")
+except Exception as e:
+    print(f"FAILED to connect to MongoDB: {e}")
+    db = None
+    users_col = None
+    playlists_col = None
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 

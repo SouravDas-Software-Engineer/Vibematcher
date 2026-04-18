@@ -1,4 +1,4 @@
-const API_URL = "";
+const API_URL = (window.location.protocol === 'file:' || (window.location.port && window.location.port !== '8000')) ? "http://127.0.0.1:8000" : "";
 let currentUser = localStorage.getItem('user');
 let token = localStorage.getItem('token');
 let recentlyPlayed = JSON.parse(localStorage.getItem('recents')) || [];

@@ -1,13 +1,13 @@
 fastapi
 uvicorn
+gunicorn
 pymongo[srv]
 python-jose[cryptography]
 passlib[argon2]
 python-dotenv
-ytmusicapi
-yt-dlp
 dnspython
 cachetools
 requests
 httpx
 python-multipart
+pyDes

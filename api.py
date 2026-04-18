@@ -27,7 +27,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME")
 SECRET_KEY = os.getenv("SECRET_KEY") or "supersecretkey123"
 ALGORITHM = "HS256"
-API_BASE_URL = "http://127.0.0.1:8000"
+API_BASE_URL = os.getenv("RENDER_EXTERNAL_URL") or "http://127.0.0.1:8000"
 
 DEFAULT_AVATAR = "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 DEFAULT_HEADER = "https://images.unsplash.com/photo-1514525253440-b393452e8d26?q=80&w=2000&auto=format&fit=crop"
@@ -131,7 +131,7 @@ def process_saavn_song(r):
         return {
             "title": title,
             "artist": artist,
-            "filename": f"{API_BASE_URL}/stream/{videoId}", 
+            "filename": f"/stream/{videoId}", 
             "cover": cover,
             "source": "saavn",
             "videoId": videoId 
@@ -283,4 +283,4 @@ async def delete_playlist(playlist_id: str, current_user: str = Depends(get_curr
     playlists_col.delete_one({"_id": ObjectId(playlist_id), "username": current_user})
     return {"message": "Deleted"}
 
-app.mount("/", StaticFiles(directory=".", html=True), name="static")
+app.mount("/", StaticFiles(directory="public", html=True), name="static")

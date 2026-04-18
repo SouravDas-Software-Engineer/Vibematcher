@@ -147,6 +147,9 @@ def process_saavn_song(r):
         artist = html.unescape(artist)
             
         cover = r.get('image', DEFAULT_AVATAR).replace('150x150', '500x500')
+        if cover.startswith("http://"):
+            cover = cover.replace("http://", "https://", 1)
+            
         videoId = r.get('id')
         
         return {
@@ -157,7 +160,8 @@ def process_saavn_song(r):
             "source": "saavn",
             "videoId": videoId 
         }
-    except Exception:
+    except Exception as e:
+        print(f"Saavn Processing Error: {e}")
         return None
 
 @app.get('/favicon.ico', include_in_schema=False)
@@ -279,8 +283,12 @@ async def stream_audio(video_id: str):
                     dec_url = dec_url.replace("_96.mp4", "_320.mp4")
                 if "_160.mp4" in dec_url:
                     dec_url = dec_url.replace("_160.mp4", "_320.mp4")
+
+                if dec_url.startswith("http://"):
+                    dec_url = dec_url.replace("http://", "https://", 1)
                 
                 url_cache[video_id] = dec_url
+                print(f"DEBUG: Streaming {video_id} -> {dec_url}")
                 return RedirectResponse(url=dec_url)
                 
         raise HTTPException(status_code=404, detail="Stream URL not found")

@@ -161,16 +161,6 @@ window.onload = () => {
     const volIndicator = document.getElementById('volume-indicator');
     const volIcon = document.getElementById('vol-btn');
 
-    function updateVolumeIcon(v) {
-        if(!volIcon) return;
-        volIcon.className = "fa-solid";
-        if(v === 0) volIcon.classList.add('fa-volume-xmark');
-        else if(v < 0.3) volIcon.classList.add('fa-volume-off');
-        else if(v < 0.7) volIcon.classList.add('fa-volume-low');
-        else volIcon.classList.add('fa-volume-high');
-        volIcon.style.color = v > 0 ? 'var(--accent)' : 'var(--text-secondary)';
-    }
-
     if(volSlider) {
         volSlider.addEventListener('input', (e) => {
             const v = parseFloat(e.target.value);
@@ -258,6 +248,31 @@ async function autoFillQueue(baseSong) {
 
 /* --- PLAYER LOGIC --- */
 async function playDirect(song) {
+    try {
+        await _playDirect(song);
+    } catch(e) {
+        console.error("Playback failed, trying to repair song data...", e);
+        try {
+            const query = `${song.title} ${song.artist}`.trim();
+            const res = await fetch(`${API_URL}/search_online?q=${encodeURIComponent(query)}`);
+            const results = await res.json();
+            if(results && results.length > 0) {
+                const refreshed = results[0];
+                song.filename = refreshed.filename;
+                song.cover = refreshed.cover;
+                song.videoId = refreshed.videoId;
+                await _playDirect(song);
+            } else {
+                alert("This track is currently unavailable.");
+            }
+        } catch(err) {
+            console.error("Repair failed", err);
+            // alert("Network error: Check your connection.");
+        }
+    }
+}
+
+async function _playDirect(song) {
     const playerBar = document.querySelector('.player-bar');
     if (playerBar) {
         playerBar.classList.add('active');
@@ -305,11 +320,8 @@ async function playDirect(song) {
 
     const streamUrl = (song.filename && song.filename.startsWith('/')) ? `${API_URL}${song.filename}` : song.filename;
     audioPlayer.src = streamUrl;
-    audioPlayer.play().catch(e => {
-        console.error("Play error", e);
-        if(playIcon) playIcon.className = "fa-solid fa-play";
-    });
-
+    const p = audioPlayer.play();
+    
     if(artElement) {
         if(song.cover) artElement.innerHTML = `<img src="${song.cover}">`;
         else artElement.innerHTML = `<i class="fa-solid fa-music"></i>`;
@@ -317,6 +329,7 @@ async function playDirect(song) {
 
     addToRecents(song);
     checkIfLiked(song);
+    return p;
 }
 
 let repeatedOnce = false;
@@ -1110,8 +1123,14 @@ async function handleAuthSubmit() {
                 }
                 
                 showApp();
-            } else showAuthError("Login Failed: Incorrect username or password.");
-        } catch(e) { showAuthError("Network Error. Please try again later."); }
+            } else {
+                const d = await res.json().catch(() => ({detail: "Unknown server error"}));
+                showAuthError(`Login Failed: ${d.detail || "Incorrect credentials"}`);
+            }
+        } catch(e) { 
+            console.error("Login bug:", e);
+            showAuthError(`Connection Error: ${e.message}. Please check your internet or retry.`); 
+        }
     } else {
         try {
             const res = await fetch(`${API_URL}/register`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username: u, password: p})});
@@ -1144,6 +1163,17 @@ function applyTheme(theme) {
     const t2 = document.getElementById('checkbox-mobile');
     if (t1) t1.checked = (theme === 'light');
     if (t2) t2.checked = (theme === 'light');
+}
+
+function updateVolumeIcon(v) {
+    const volIcon = document.getElementById('vol-btn');
+    if(!volIcon) return;
+    volIcon.className = "fa-solid";
+    if(v === 0) volIcon.classList.add('fa-volume-xmark');
+    else if(v < 0.3) volIcon.classList.add('fa-volume-off');
+    else if(v < 0.7) volIcon.classList.add('fa-volume-low');
+    else volIcon.classList.add('fa-volume-high');
+    volIcon.style.color = v > 0 ? 'var(--accent)' : 'var(--text-secondary)';
 }
 
 function toggleThemeFromMobile(el) {

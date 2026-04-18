@@ -1,10 +1,11 @@
 import os
 import requests
-import httpx
+import base64
+import html
 from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Response, Request, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -13,12 +14,11 @@ from pymongo import MongoClient
 from passlib.context import CryptContext
 from jose import jwt
 from dotenv import load_dotenv
-from ytmusicapi import YTMusic
-from yt_dlp import YoutubeDL
 from bson import ObjectId
 from cachetools import TTLCache
+from pyDes import des, ECB, PAD_PKCS5
 
-load_dotenv(dotenv_path="env.env")
+load_dotenv(dotenv_path=".env")
 
 app = FastAPI()
 auth_scheme = HTTPBearer()
@@ -27,21 +27,12 @@ MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME")
 SECRET_KEY = os.getenv("SECRET_KEY") or "supersecretkey123"
 ALGORITHM = "HS256"
-API_BASE_URL = "https://vibematcher-d9lt.onrender.com"
+API_BASE_URL = "http://127.0.0.1:8000"
 
 DEFAULT_AVATAR = "https://cdn-icons-png.flaticon.com/512/847/847969.png"
 DEFAULT_HEADER = "https://images.unsplash.com/photo-1514525253440-b393452e8d26?q=80&w=2000&auto=format&fit=crop"
 
 url_cache = TTLCache(maxsize=1000, ttl=3600)
-
-PIPED_INSTANCES = [
-    "https://pipedapi.kavin.rocks",
-    "https://pipedapi.syncular.network",
-    "https://api.piped.projectsegfau.lt",
-    "https://pipedapi.smnz.de",
-    "https://pipedapi.adminforge.de",
-    "https://pipedapi.tokhmi.xyz"
-]
 
 app.add_middleware(
     CORSMiddleware,
@@ -68,6 +59,7 @@ class ProfileUpdate(BaseModel):
     bio: Optional[str] = ""
     avatar: Optional[str] = ""
     header: Optional[str] = ""
+    theme_color: Optional[str] = "#29cc70"
 
 class PlaylistCreate(BaseModel):
     username: str
@@ -103,6 +95,50 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(auth_sc
     except Exception:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
+
+# JIOSAAVN HELPER FUNCTIONS
+def decrypt_url(url):
+    try:
+        des_cipher = des(b"38346591", ECB, padmode=PAD_PKCS5)
+        enc_url = base64.b64decode(url.strip())
+        dec_url = des_cipher.decrypt(enc_url, padmode=PAD_PKCS5).decode('utf-8')
+        return dec_url
+    except Exception:
+        return ""
+
+def get_saavn_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
+def process_saavn_song(r):
+    try:
+        title = r.get('title') or r.get('song') or 'Unknown Title'
+        title = html.unescape(title)
+        more_info = r.get('more_info', {})
+        
+        artist = r.get('primary_artists') or r.get('singers') or "Unknown Artist"
+        if artist == "Unknown Artist":
+            if 'singers' in more_info and more_info['singers']:
+                artist = more_info['singers']
+            elif 'primary_artists' in more_info and more_info['primary_artists']:
+                artist = more_info['primary_artists']
+        artist = html.unescape(artist)
+            
+        cover = r.get('image', DEFAULT_AVATAR).replace('150x150', '500x500')
+        videoId = r.get('id')
+        
+        return {
+            "title": title,
+            "artist": artist,
+            "filename": f"{API_BASE_URL}/stream/{videoId}", 
+            "cover": cover,
+            "source": "saavn",
+            "videoId": videoId 
+        }
+    except Exception:
+        return None
+
 @app.get('/favicon.ico', include_in_schema=False)
 async def favicon():
     return Response(status_code=204)
@@ -113,7 +149,7 @@ async def register(user: UserAuth):
         raise HTTPException(status_code=400, detail="Username already taken")
     users_col.insert_one({
         "username": user.username, "password": get_password_hash(user.password), 
-        "display_name": user.username, "bio": "Music Lover", "avatar": DEFAULT_AVATAR, "header": DEFAULT_HEADER 
+        "display_name": user.username, "bio": "Music Lover", "avatar": DEFAULT_AVATAR, "header": DEFAULT_HEADER, "theme_color": "#29cc70"
     })
     return {"message": "User created"}
 
@@ -125,147 +161,97 @@ async def login(user: UserAuth):
     return {
         "access_token": create_access_token({"sub": user.username}), 
         "username": user.username, "display_name": db_user.get("display_name", user.username), 
-        "bio": db_user.get("bio", ""), "avatar": db_user.get("avatar", DEFAULT_AVATAR), "header": db_user.get("header", DEFAULT_HEADER) 
+        "bio": db_user.get("bio", ""), "avatar": db_user.get("avatar", DEFAULT_AVATAR), "header": db_user.get("header", DEFAULT_HEADER), "theme_color": db_user.get("theme_color", "#29cc70")
     }
 
 @app.post("/update_profile")
 async def update_profile(data: ProfileUpdate, current_user: str = Depends(get_current_user)):
     if data.username != current_user:
         raise HTTPException(status_code=403, detail="Not authorized")
-    users_col.update_one({"username": data.username}, {"$set": {"display_name": data.display_name, "bio": data.bio, "avatar": data.avatar, "header": data.header}})
+    users_col.update_one({"username": data.username}, {"$set": {"display_name": data.display_name, "bio": data.bio, "avatar": data.avatar, "header": data.header, "theme_color": data.theme_color}})
     return {"message": "Updated"}
 
 @app.get("/search_online")
 def search_online(q: str):
     if not q: return []
     try:
-        yt = YTMusic()
-        results = yt.search(q, filter='songs')
-        data = []
-        for r in results[:20]: 
-            try:
-                video_id = r.get('videoId')
-                if not video_id: continue
-                thumbnails = r.get('thumbnails', [])
-                cover_url = thumbnails[-1]['url'] if thumbnails else DEFAULT_AVATAR
-                artists = r.get('artists', [])
-                artist_name = ", ".join([a['name'] for a in artists]) if artists else "Unknown"
-
-                data.append({
-                    "title": r.get('title', 'Unknown Title'),
-                    "artist": artist_name,
-                    "filename": f"{API_BASE_URL}/stream_yt/{video_id}", 
-                    "cover": cover_url,
-                    "source": "online",
-                    "videoId": video_id 
-                })
-            except Exception:
-                continue
-        return data
-    except Exception:
+        url = f"https://www.jiosaavn.com/api.php?__call=search.getResults&q={q}&n=20&p=1&_format=json&_marker=0&ctx=android"
+        res = requests.get(url, headers=get_saavn_headers())
+        data = res.json()
+        
+        results = []
+        if 'results' in data:
+            for r in data['results']:
+                song_obj = process_saavn_song(r)
+                if song_obj:
+                    results.append(song_obj)
+        return results
+    except Exception as e:
+        print(f"Search API Error: {e}")
         return []
 
 @app.get("/recommendations")
 def get_recommendations(video_id: Optional[str] = None, title: Optional[str] = None, artist: Optional[str] = ""):
     try:
-        yt = YTMusic()
         target_id = video_id
         if not target_id or target_id == "undefined":
+            # Search to get ID
             if title:
-                search_results = yt.search(f"{title} {artist}", filter='songs')
-                if search_results:
-                    target_id = search_results[0].get('videoId')
+                s_url = f"https://www.jiosaavn.com/api.php?__call=search.getResults&q={title} {artist}&n=1&p=1&_format=json&_marker=0&ctx=android"
+                s_res = requests.get(s_url, headers=get_saavn_headers()).json()
+                if 'results' in s_res and len(s_res['results']) > 0:
+                    target_id = s_res['results'][0].get('id')
             
         if not target_id: return []
 
-        watch_list = yt.get_watch_playlist(videoId=target_id, limit=10)
-        tracks = watch_list.get('tracks', [])
+        url = f"https://www.jiosaavn.com/api.php?__call=reco.getreco&pid={target_id}&_format=json&_marker=0&ctx=android"
+        res = requests.get(url, headers=get_saavn_headers())
+        data = res.json()
         
         results = []
-        for t in tracks:
-            vid = t.get('videoId')
-            if not vid or vid == target_id: continue
-            
-            results.append({
-                "title": t.get('title', 'Unknown'),
-                "artist": t['artists'][0]['name'] if t.get('artists') else "Unknown",
-                "filename": f"{API_BASE_URL}/stream_yt/{vid}",
-                "cover": t['thumbnail'][0]['url'] if t.get('thumbnail') else DEFAULT_AVATAR,
-                "source": "recommendation",
-                "videoId": vid
-            })
+        if isinstance(data, dict):
+            if target_id in data:
+                data = data[target_id]
+            elif len(data.keys()) > 0:
+                data = data[list(data.keys())[0]]
+
+        if isinstance(data, list):
+            for r in data:
+                song_obj = process_saavn_song(r)
+                if song_obj:
+                    results.append(song_obj)
         return results
     except Exception:
         return []
 
-@app.get("/stream_yt/{video_id}")
-async def stream_yt(video_id: str, request: Request):
-    final_stream_url = None
-    stream_headers = {}
-
+@app.get("/stream/{video_id}")
+async def stream_audio(video_id: str):
     if video_id in url_cache:
-        cached_data = url_cache[video_id]
-        if isinstance(cached_data, tuple):
-            final_stream_url, stream_headers = cached_data
+        return RedirectResponse(url=url_cache[video_id])
 
-    if not final_stream_url:
-        try:
-            ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'noplaylist': True, 'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}}
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                final_stream_url = info['url']
-                stream_headers = info.get('http_headers', {})
-                url_cache[video_id] = (final_stream_url, stream_headers)
-        except Exception as e:
-            print(f"yt-dlp blocked by YouTube. Attempting backups...")
-            for base_url in PIPED_INSTANCES:
-                try:
-                    # Increased timeout to 10 seconds to allow slow free servers to respond
-                    r = requests.get(f"{base_url}/streams/{video_id}", timeout=10)
-                    if r.status_code == 200:
-                        data = r.json()
-                        for s in data.get('audioStreams', []):
-                            if s.get('mimeType', '').startswith('audio/'):
-                                final_stream_url = s['url']
-                                url_cache[video_id] = (final_stream_url, {})
-                                print(f"Successfully streamed using backup: {base_url}")
-                                break
-                    if final_stream_url: break
-                except Exception as ex: 
-                    print(f"Backup {base_url} failed or timed out.")
-                    continue
-            
-            if not final_stream_url:
-                raise HTTPException(status_code=404, detail="Could not stream from any source")
-
-    client = httpx.AsyncClient()
-    headers = {"Range": request.headers.get("range", "bytes=0-")}
-    headers.update(stream_headers)
-    
-    req = client.build_request("GET", final_stream_url, headers=headers)
-    r = await client.send(req, stream=True)
-
-    if r.status_code >= 400:
-        await r.aclose()
-        await client.aclose()
-        if video_id in url_cache: del url_cache[video_id]
-        raise HTTPException(status_code=r.status_code)
-
-    # Use a generator to yield chunks, then safely close the client
-    async def stream_generator():
-        try:
-            async for chunk in r.aiter_bytes():
-                yield chunk
-        finally:
-            await r.aclose()
-            await client.aclose()
-
-    return StreamingResponse(
-        stream_generator(),
-        status_code=r.status_code,
-        headers={k: v for k, v in r.headers.items() if k.lower() in ["content-range", "content-length", "accept-ranges"]},
-        media_type=r.headers.get("content-type", "audio/webm")
-    )
+    try:
+        song_url = f"https://www.jiosaavn.com/api.php?__call=song.getDetails&pids={video_id}&_format=json&_marker=0&ctx=android"
+        res = requests.get(song_url, headers=get_saavn_headers())
+        data = res.json()
+        
+        if video_id in data:
+            song_info = data[video_id]
+            enc_url = song_info.get('encrypted_media_url', '')
+            if enc_url:
+                dec_url = decrypt_url(enc_url)
+                # Ensure high quality
+                if "_96.mp4" in dec_url:
+                    dec_url = dec_url.replace("_96.mp4", "_320.mp4")
+                if "_160.mp4" in dec_url:
+                    dec_url = dec_url.replace("_160.mp4", "_320.mp4")
+                
+                url_cache[video_id] = dec_url
+                return RedirectResponse(url=dec_url)
+                
+        raise HTTPException(status_code=404, detail="Stream URL not found")
+    except Exception as e:
+        print(f"Streaming Error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Error")
 
 @app.post("/playlists/create")
 async def create_playlist(data: PlaylistCreate, current_user: str = Depends(get_current_user)):

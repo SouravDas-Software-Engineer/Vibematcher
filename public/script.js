@@ -1,4 +1,5 @@
-const API_URL = (window.location.protocol === 'file:' || (window.location.port && window.location.port !== '8000')) ? "http://127.0.0.1:8000" : "";
+const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname === "";
+const API_URL = (window.location.protocol === 'file:' || (isLocal && window.location.port !== '8000')) ? "http://127.0.0.1:8000" : "";
 let currentUser = localStorage.getItem('user');
 let token = localStorage.getItem('token');
 let recentlyPlayed = JSON.parse(localStorage.getItem('recents')) || [];
@@ -26,7 +27,7 @@ let currentPlaylistData = null;
 let isEditingPlaylist = false;
 
 // Elements
-const audioPlayer = document.getElementById('audio-player');
+const audioPlayer =   document.getElementById('audio-player');
 // Important: JioSaavn CDN supports CORS, so we can keep crossorigin for visualizer
 audioPlayer.crossOrigin = "anonymous";
 
@@ -56,12 +57,16 @@ window.onload = () => {
     const themeToggle = document.getElementById('checkbox');
     if (themeToggle) {
         const savedTheme = localStorage.getItem('theme') || 'dark';
-        document.body.setAttribute('data-theme', savedTheme);
-        themeToggle.checked = (savedTheme === 'light');
+        const theme = savedTheme;
+        document.body.setAttribute('data-theme', theme);
+        themeToggle.checked = (theme === 'light');
+        
+        const mobileToggle = document.getElementById('checkbox-mobile');
+        if (mobileToggle) mobileToggle.checked = (theme === 'light');
+
         themeToggle.addEventListener('change', function(e) {
-            const theme = e.target.checked ? 'light' : 'dark';
-            document.body.setAttribute('data-theme', theme);
-            localStorage.setItem('theme', theme);
+            const newTheme = e.target.checked ? 'light' : 'dark';
+            applyTheme(newTheme);
         });
     }
     
@@ -77,6 +82,7 @@ window.onload = () => {
     }
     if (volSlider) {
         volSlider.value = audioPlayer.volume;
+        updateSliderProgress(volSlider);
     }
 
     // Window Resize for Canvas Stability
@@ -138,9 +144,11 @@ window.onload = () => {
              isSeeking = true; 
              const currTimeElem = document.getElementById('curr-time');
              if(currTimeElem) currTimeElem.innerText = formatTime(e.target.value);
+             updateSliderProgress(e.target);
         });
         seekSlider.addEventListener('change', (e) => {
              audioPlayer.currentTime = e.target.value;
+             updateSliderProgress(e.target);
              setTimeout(() => { isSeeking = false; }, 50);
         });
         seekSlider.addEventListener('touchend', (e) => {
@@ -149,14 +157,61 @@ window.onload = () => {
        });
     }
 
-    if(volSlider) volSlider.addEventListener('input', () => {
-        audioPlayer.volume = volSlider.value;
-        if (currentUser) {
-            localStorage.setItem('volume_' + currentUser, volSlider.value);
-        } else {
-            localStorage.setItem('volume', volSlider.value);
-        }
-    });
+    let volSyncTimeout = null;
+    const volIndicator = document.getElementById('volume-indicator');
+    const volIcon = document.getElementById('vol-btn');
+
+    function updateVolumeIcon(v) {
+        if(!volIcon) return;
+        volIcon.className = "fa-solid";
+        if(v === 0) volIcon.classList.add('fa-volume-xmark');
+        else if(v < 0.3) volIcon.classList.add('fa-volume-off');
+        else if(v < 0.7) volIcon.classList.add('fa-volume-low');
+        else volIcon.classList.add('fa-volume-high');
+        volIcon.style.color = v > 0 ? 'var(--accent)' : 'var(--text-secondary)';
+    }
+
+    if(volSlider) {
+        volSlider.addEventListener('input', (e) => {
+            const v = parseFloat(e.target.value);
+            audioPlayer.volume = v;
+            if (currentUser) {
+                localStorage.setItem('volume_' + currentUser, v);
+            } else {
+                localStorage.setItem('volume', v);
+            }
+            
+            updateVolumeIcon(v);
+            updateSliderProgress(e.target);
+            
+            // Visuals
+            if(volIndicator) {
+                volIndicator.innerText = `${Math.round(v * 100)}%`;
+                volIndicator.classList.add('active');
+                volSlider.classList.add('pulsing');
+                
+                clearTimeout(window.volHideTimeout);
+                window.volHideTimeout = setTimeout(() => {
+                    volIndicator.classList.remove('active');
+                    volSlider.classList.remove('pulsing');
+                }, 1500);
+            }
+
+            // Sync to Server (Debounced)
+            clearTimeout(volSyncTimeout);
+            volSyncTimeout = setTimeout(async () => {
+                if(token) {
+                    await authFetch(`${API_URL}/update_volume`, {
+                        method: 'POST',
+                        body: JSON.stringify({ volume: v })
+                    });
+                }
+            }, 1000);
+        });
+        
+        // Ensure initial volume icon is correct
+        updateVolumeIcon(audioPlayer.volume);
+    }
 
     if (token && currentUser) showApp();
     drawWaveform();
@@ -204,7 +259,10 @@ async function autoFillQueue(baseSong) {
 /* --- PLAYER LOGIC --- */
 async function playDirect(song) {
     const playerBar = document.querySelector('.player-bar');
-    if (playerBar) playerBar.classList.add('active');
+    if (playerBar) {
+        playerBar.classList.add('active');
+        playerBar.classList.remove('collapsed'); // Always expand when new music starts
+    }
 
     const titleEl = document.getElementById('current-title');
     const artistEl = document.getElementById('current-artist');
@@ -245,7 +303,8 @@ async function playDirect(song) {
         } catch(e) { console.error("Legacy upgrade failed", e); }
     }
 
-    audioPlayer.src = song.filename;
+    const streamUrl = (song.filename && song.filename.startsWith('/')) ? `${API_URL}${song.filename}` : song.filename;
+    audioPlayer.src = streamUrl;
     audioPlayer.play().catch(e => {
         console.error("Play error", e);
         if(playIcon) playIcon.className = "fa-solid fa-play";
@@ -729,6 +788,7 @@ function updateSeekbar() {
     if (isSeeking) return; 
     if(seekSlider && isFinite(audioPlayer.currentTime)) {
         seekSlider.value = audioPlayer.currentTime;
+        updateSliderProgress(seekSlider);
         const currTimeElem = document.getElementById('curr-time');
         if(currTimeElem) currTimeElem.innerText = formatTime(audioPlayer.currentTime);
     }
@@ -769,6 +829,25 @@ async function showHome() {
         recentsDiv.innerHTML = "";
         recentlyPlayed.slice(0, 10).forEach(item => recentsDiv.appendChild(createCard(item)));
     }
+    
+    const playlistsDiv = document.getElementById('home-playlists');
+    if(playlistsDiv) {
+        playlistsDiv.innerHTML = "<p style='color:var(--text-secondary); padding:5px; font-size:12px;'>Syncing collections...</p>";
+        try {
+            const res = await authFetch(`${API_URL}/playlists/${currentUser}`);
+            const playlists = await res.json();
+            playlistsDiv.innerHTML = "";
+            if (playlists.length === 0) {
+                playlistsDiv.innerHTML = "<p style='color:var(--text-secondary); padding:5px; font-size:12px;'>No playlists yet. Create from Profile!</p>";
+            } else {
+                playlists.slice(0, 10).forEach(p => {
+                    p.type = 'playlist';
+                    playlistsDiv.appendChild(createCard(p));
+                });
+            }
+        } catch(e) { playlistsDiv.innerHTML = "<p style='font-size:12px; color:var(--text-secondary);'>Nothing here yet.</p>"; }
+    }
+
     const trendingDiv = document.getElementById('home-trending');
     if(trendingDiv && trendingDiv.innerHTML === "") { 
         trendingDiv.innerHTML = "<p style='color:var(--text-secondary); width:100%;'>Loading Trends...</p>";
@@ -862,17 +941,24 @@ function switchProfileTab(tab) {
 
 function createCard(item) {
     const div = document.createElement('div');
-    div.className = "music-card";
+    const isPlaylist = (item.type === 'playlist');
+    div.className = `music-card ${isPlaylist ? 'playlist-type' : ''}`;
+    
     const img = item.cover || (item.songs && item.songs[0]?.cover) || "https://via.placeholder.com/250";
+    const title = item.title || item.name;
+    const subtitle = isPlaylist ? (item.songs?.length || 0) + ' Tracks' : (item.artist || 'Artist');
+
     div.innerHTML = `
-        <div class="card-img-box"><img src="${img}"></div>
-        <div class="card-title">${item.title || item.name}</div>
-        <div class="card-subtitle">${item.artist || item.songs?.length + ' Tracks'}</div>
-        ${item.type === 'playlist' ? `<div class="delete-card-btn" onclick="deletePlaylist(event, '${item._id}')"><i class="fa-solid fa-trash"></i></div>` : ''}
+        <div class="card-img-box">
+            <img src="${img}">
+            ${isPlaylist ? `<div class="playlist-delete-overlay" onclick="deletePlaylist(event, '${item._id}')"><i class="fa-solid fa-trash-can"></i></div>` : ''}
+        </div>
+        <div class="card-title">${title}</div>
+        <div class="card-subtitle">${subtitle}</div>
     `;
     div.onclick = (e) => {
-        if(e.target.closest('.delete-card-btn')) return;
-        item.type === 'playlist' ? openPlaylistView(item) : playSingle(item);
+        if(e.target.closest('.playlist-delete-overlay')) return;
+        isPlaylist ? openPlaylistView(item) : playSingle(item);
     };
     return div;
 }
@@ -1013,10 +1099,14 @@ async function handleAuthSubmit() {
                 }
                 document.getElementById('password').value = "";
                 
-                const userVol = localStorage.getItem('volume_' + currentUser);
-                if (userVol && audioPlayer) {
+                const userVol = data.volume !== undefined ? data.volume : localStorage.getItem('volume_' + currentUser);
+                if (userVol !== null && audioPlayer) {
                     audioPlayer.volume = parseFloat(userVol);
-                    if (volSlider) volSlider.value = userVol;
+                    if (volSlider) {
+                        volSlider.value = userVol;
+                        updateSliderProgress(volSlider);
+                    }
+                    updateVolumeIcon(audioPlayer.volume);
                 }
                 
                 showApp();
@@ -1047,10 +1137,56 @@ async function handleAuthSubmit() {
 
 function logout() { localStorage.clear(); location.reload(); }
 
+function applyTheme(theme) {
+    document.body.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+    const t1 = document.getElementById('checkbox');
+    const t2 = document.getElementById('checkbox-mobile');
+    if (t1) t1.checked = (theme === 'light');
+    if (t2) t2.checked = (theme === 'light');
+}
+
+function toggleThemeFromMobile(el) {
+    const theme = el.checked ? 'light' : 'dark';
+    applyTheme(theme);
+}
+
+function updateSliderProgress(el) {
+    if (!el) return;
+    const min = parseFloat(el.min || 0);
+    const max = parseFloat(el.max || 100);
+    const val = parseFloat(el.value);
+    const percent = ((val - min) / (max - min)) * 100;
+    el.style.background = `linear-gradient(to right, var(--accent) ${percent}%, var(--surface-light) ${percent}%)`;
+    
+    // Exact bubble movement logic
+    if (el.id === 'vol-slider') {
+        const bubble = document.getElementById('volume-indicator');
+        if (bubble) bubble.style.left = `${percent}%`;
+    }
+}
+
+// Ensure volume icon and slider progress is correct initially
+if(volSlider) updateSliderProgress(volSlider);
+
+function togglePlayerCollapse(e) {
+    if (e) e.stopPropagation();
+    const pb = document.querySelector('.player-bar');
+    pb.classList.toggle('collapsed');
+}
+
 function showApp() { 
     document.getElementById('auth-screen').classList.remove('active'); 
     document.getElementById('app-screen').classList.remove('hidden'); 
     showHome(); 
+
+    // Handle full bar click to expand
+    document.querySelector('.player-bar').addEventListener('click', (e) => {
+        const pb = e.currentTarget;
+        if (pb.classList.contains('collapsed') && !e.target.closest('.player-collapse-btn')) {
+            pb.classList.remove('collapsed');
+        }
+    });
 }
 
 function openModal(id) { document.getElementById(id).classList.add('active'); }
@@ -1101,15 +1237,7 @@ async function deletePlaylist(event, playlistId) {
     } catch (e) { alert("Server error."); }
 }
 
-async function saveProfile() {
-    const n = document.getElementById('edit-name').value;
-    const b = document.getElementById('edit-bio').value;
-    const av = newAvatarBase64 || localStorage.getItem('avatar') || DEFAULT_AVATAR;
-    const hd = newHeaderBase64 || localStorage.getItem('header') || DEFAULT_HEADER;
-    await authFetch(`${API_URL}/update_profile`, { method: 'POST', body: JSON.stringify({username: currentUser, display_name: n, bio: b, avatar: av, header: hd})});
-    localStorage.setItem('display_name', n); localStorage.setItem('bio', b); localStorage.setItem('avatar', av); localStorage.setItem('header', hd);
-    closeModal('profile-modal'); showProfileView();
-}
+// Duplicate saveProfile removed. Using unified version at line 891.
 
 async function renderPlaylists() {
     const list = document.getElementById('playlist-list');

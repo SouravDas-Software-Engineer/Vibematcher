@@ -170,7 +170,8 @@ async def register(user: UserAuth):
         raise HTTPException(status_code=400, detail="Username already taken")
     users_col.insert_one({
         "username": user.username, "password": get_password_hash(user.password), 
-        "display_name": user.username, "bio": "Music Lover", "avatar": DEFAULT_AVATAR, "header": DEFAULT_HEADER, "theme_color": "#29cc70"
+        "display_name": user.username, "bio": "Music Lover", "avatar": DEFAULT_AVATAR, "header": DEFAULT_HEADER, "theme_color": "#29cc70",
+        "volume": 1.0
     })
     return {"message": "User created"}
 
@@ -181,8 +182,13 @@ async def login(user: UserAuth):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return {
         "access_token": create_access_token({"sub": user.username}), 
-        "username": user.username, "display_name": db_user.get("display_name", user.username), 
-        "bio": db_user.get("bio", ""), "avatar": db_user.get("avatar", DEFAULT_AVATAR), "header": db_user.get("header", DEFAULT_HEADER), "theme_color": db_user.get("theme_color", "#29cc70")
+        "username": user.username, 
+        "display_name": db_user.get("display_name") or user.username, 
+        "bio": db_user.get("bio") or "", 
+        "avatar": db_user.get("avatar") or DEFAULT_AVATAR, 
+        "header": db_user.get("header") or DEFAULT_HEADER, 
+        "theme_color": db_user.get("theme_color") or "#29cc70",
+        "volume": db_user.get("volume", 1.0)
     }
 
 @app.post("/update_profile")
@@ -191,6 +197,14 @@ async def update_profile(data: ProfileUpdate, current_user: str = Depends(get_cu
         raise HTTPException(status_code=403, detail="Not authorized")
     users_col.update_one({"username": data.username}, {"$set": {"display_name": data.display_name, "bio": data.bio, "avatar": data.avatar, "header": data.header, "theme_color": data.theme_color}})
     return {"message": "Updated"}
+
+class VolumeUpdate(BaseModel):
+    volume: float
+
+@app.post("/update_volume")
+async def update_volume(data: VolumeUpdate, current_user: str = Depends(get_current_user)):
+    users_col.update_one({"username": current_user}, {"$set": {"volume": data.volume}})
+    return {"message": "Volume updated"}
 
 @app.get("/search_online")
 def search_online(q: str):
